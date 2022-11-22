@@ -1,75 +1,203 @@
 name: verify
+on:
+  push:
+    branches:
+      - "master"
+  workflow_dispatch:
 
-on: push
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up competitive-verifier
+        uses: competitive-verifier/setup-competitive-verifier@v1
+        with:
+          python-version: "3.9"
+          cache-pip: true
+
+      # Initialize your own environment for resolving.
+      # required only if you set `languages.rust.list_dependencies_backend.kind` to `"cargo-udeps"`
+      - name: Set up Rust (nightly)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          targets: x86_64-unknown-linux-gnu
+      - name: Install cargo-udeps for Rust
+        uses: baptiste0928/cargo-install@v1
+        with:
+          crate: cargo-udeps
+          cache-key: cargo-udeps-key
+      - name: oj-resolve
+        uses: competitive-verifier/oj-resolve-action@v1
+        with:
+          output-path: verify_files.json
+          # Specify patterns
+          include: |
+                examples/
+                Examples2/
+          exclude: |
+                examples/csharpscript
+          # If you have config.toml
+          config: .verify-helper/config.toml
+
+      - name: Upload verify_files.json
+        uses: competitive-verifier/upload-verify-artifact@v1
+        with:
+          file: verify_files.json
+
+      - name: Check bundled
+        id: test-bundled
+        run: |
+          echo "count=$(find .competitive-verifier/bundled/ -type f | wc -l)" >> $GITHUB_OUTPUT
+      - name: Upload bundled
+        uses: actions/upload-artifact@v3
+        if: steps.test-bundled.outputs.count > 0
+        with:
+          name: Bundled-${{ runner.os }}
+          path: .competitive-verifier/bundled
+          retention-days: 1
+
   verify:
     runs-on: ubuntu-latest
-
+    needs: [setup]
+    env:
+      SPLIT_SIZE: 8
+    strategy:
+      matrix:
+        # prettier-ignore
+        index:
+          ["0", "1", "2", "3", "4", "5", "6", "7"]
     steps:
-    - uses: actions/checkout@v1
+      - uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v1
+      - name: Download verify_files.json
+        uses: competitive-verifier/download-verify-artifact@v1
 
-    - name: Install dependencies
-      run: pip3 install -U git+https://github.com/online-judge-tools/verification-helper.git@master
+      - name: Set up competitive-verifier
+        uses: competitive-verifier/setup-competitive-verifier@v1
+        with:
+          python-version: "3.9"
+          cache-pip: true
 
+      # Initialize your own environment for verification.
+      # required only if you want to verify Java code
+      - name: Install dependencies (Java)
+        uses: actions/setup-java@v3
+        with:
+          distribution: "temurin"
+          java-version: "11"
+      # required only if you want to verify Go code
+      - name: Install dependencies (Go)
+        uses: actions/setup-go@v3
+      # required only if you want to verify Ruby code
+      - name: Install dependencies (Ruby)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.1"
+      # required only if you want to verify Nim code
+      - name: Install dependencies (Nim)
+        run: sudo apt install nim
+      # required only if you want to verify Haskell code
+      - name: Install dependencies (Haskell)
+        uses: haskell/actions/setup@v2
+      # required only if you want to verify Rust
+      - name: Set up Rust (1.42.0)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.42.0"
+          targets: x86_64-unknown-linux-gnu
 
-    # required only if you want to verify Haskell code
-    - name: Install dependencies (Haskell)
-      uses: actions/setup-haskell@v1
+      - name: Verify
+        uses: competitive-verifier/verify-action@v1
+        with:
+          destination: ${{runner.temp}}/result.json
+          split-size: ${{ env.SPLIT_SIZE }}
+          split-index: ${{ matrix.index }}
+        # specify tokens
+        # env:
+        #   YUKICODER_TOKEN: ${{secrets.YUKICODER_TOKEN}}
 
-    # required only if you want to verify Java code
-    - name: Install dependencies (Java)
-      uses: actions/setup-java@v1
-      with:
-        java-version: 11
+      - name: Upload result artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: Result-${{ runner.os }}-${{ matrix.index }}
+          path: ${{runner.temp}}/result.json
+          retention-days: 1
 
-    # required only if you want to verify C# script files
-    - uses: actions/setup-dotnet@v1
-      with:
-        dotnet-version: '3.1.101'
-    - name: Install dependencies (C#)
-      run: dotnet tool install -g dotnet-script
+  docs-and-check:
+    runs-on: ubuntu-latest
+    needs: [verify]
+    steps:
+      - uses: actions/checkout@v3
 
-    # required only if you want to verify Go code
-    - name: Install dependencies (Go)
-      uses: actions/setup-go@v2
+      - name: Download verify_files.json and all artifacts
+        id: all-artifacts
+        uses: competitive-verifier/download-verify-artifact@v1
+        with:
+          download-all: true
+          artifact-root: .artifacts/
 
-    # required only if you want to verify Ruby code
-    - name: Install dependencies (Ruby)
-      uses: actions/setup-ruby@v1
+      - name: Extract bundled
+        shell: bash
+        run: |
+          rm -rf .competitive-verifier/bundled
+          if test -d "$SRCDIR"; then
+            mkdir -p .competitive-verifier/
+            mv "$SRCDIR" .competitive-verifier/bundled
+          else
+            echo "$SRCDIR is not exists."
+          fi
+        env:
+          SRCDIR: .artifacts/Bundled-${{ runner.os }}
 
-    # required only if you want to verify Nim code
-    - name: Install dependencies (Nim)
-      run: sudo apt install nim
+      - name: Set up competitive-verifier
+        uses: competitive-verifier/setup-competitive-verifier@v1
+        with:
+          python-version: "3.9"
+          cache-pip: true
 
-    - name: Set up Rust (1.42.0)
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: 1.42.0-x86_64-unknown-linux-gnu
-        default: true
-        profile: minimal
+      - name: Docs
+        uses: competitive-verifier/docs-action@v1
+        with:
+          verify-result: ${{ steps.all-artifacts.outputs.artifacts-root }}/Result-*/result.json
+          destination: _jekyll
+          write-summary: true
 
-    # required by cargo-udeps
-    - name: Set up Rust (nightly)
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly-x86_64-unknown-linux-gnu
-        default: true
-        profile: minimal
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: _jekyll
+          destination: _site
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v1
+        with:
+          path: _site
 
-    # required only if you set `languages.rust.list_dependencies_backend.kind` to `"cargo-udeps"`
-    - name: Install cargo-udeps for Rust
-      uses: actions-rs/install@v0.1
-      with:
-        crate: cargo-udeps
-        use-tool-cache: true
-
-    - name: Run tests
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        YUKICODER_TOKEN: ${{ secrets.YUKICODER_TOKEN }}
-        GH_PAT: ${{ secrets.GH_PAT }}
-      run: oj-verify all
+      - name: Check
+        uses: competitive-verifier/check-action@v1
+        with:
+          verify-result: ${{ steps.all-artifacts.outputs.artifacts-root }}/Result-*/result.json
+  deploy:
+    if: (success() || failure()) && github.ref == 'refs/heads/master'
+    needs: docs-and-check
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v1
