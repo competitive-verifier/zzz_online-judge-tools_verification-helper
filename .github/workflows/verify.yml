@@ -109,7 +109,7 @@ jobs:
           ruby-version: "3.1"
       # required only if you want to verify Nim code
       - name: Install dependencies (Nim)
-        run: sudo apt install nim
+        uses: jiro4989/setup-nim-action@v1
       # required only if you want to verify Haskell code
       - name: Install dependencies (Haskell)
         uses: haskell/actions/setup@v2
